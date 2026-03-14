@@ -20,7 +20,7 @@ export interface CategoryResolutionResult {
   modelInfo: ModelFallbackInfo | undefined
   actualModel: string | undefined
   isUnstableAgent: boolean
-  fallbackChain?: FallbackEntry[]  // For runtime retry on model errors
+  fallbackChain?: FallbackEntry[] // For runtime retry on model errors
   error?: string
 }
 
@@ -28,7 +28,7 @@ export async function resolveCategoryExecution(
   args: DelegateTaskArgs,
   executorCtx: ExecutorContext,
   inheritedModel: string | undefined,
-  systemDefaultModel: string | undefined
+  systemDefaultModel: string | undefined,
 ): Promise<CategoryResolutionResult> {
   const { client, userCategories, sisyphusJuniorModel } = executorCtx
 
@@ -95,9 +95,13 @@ Available categories: ${allCategoryNames}`,
     // per-category overrides via `categories[category].model`.
     actualModel = explicitCategoryModel ?? overrideModel ?? resolved.model
     if (actualModel) {
-      modelInfo = explicitCategoryModel || overrideModel
-        ? { model: actualModel, type: "user-defined", source: "override" }
-        : { model: actualModel, type: "system-default", source: "system-default" }
+      modelInfo =
+        explicitCategoryModel || overrideModel
+          ? { model: actualModel, type: "user-defined", source: "override" }
+          : { model: actualModel, type: "system-default", source: "system-default" }
+      const parsed = parseModelString(actualModel)
+      const variant = userCategories?.[args.category!]?.variant ?? resolved.config.variant
+      categoryModel = parsed ? (variant ? { ...parsed, variant } : parsed) : undefined
     }
   } else {
     const resolution = resolveModelForDelegateTask({
@@ -127,26 +131,20 @@ Available categories: ${allCategoryNames}`,
       }
 
       const type: "user-defined" | "inherited" | "category-default" | "system-default" =
-        (explicitCategoryModel || overrideModel)
+        explicitCategoryModel || overrideModel
           ? "user-defined"
-          : (systemDefaultModel && actualModel === systemDefaultModel)
-              ? "system-default"
-              : "category-default"
+          : systemDefaultModel && actualModel === systemDefaultModel
+            ? "system-default"
+            : "category-default"
 
       const source: "override" | "category-default" | "system-default" =
-        type === "user-defined"
-          ? "override"
-          : type === "system-default"
-              ? "system-default"
-              : "category-default"
+        type === "user-defined" ? "override" : type === "system-default" ? "system-default" : "category-default"
 
       modelInfo = { model: actualModel, type, source }
 
       const parsedModel = parseModelString(actualModel)
       const variantToUse = userCategories?.[args.category!]?.variant ?? resolvedVariant ?? resolved.config.variant
-      categoryModel = parsedModel
-        ? (variantToUse ? { ...parsedModel, variant: variantToUse } : parsedModel)
-        : undefined
+      categoryModel = parsedModel ? (variantToUse ? { ...parsedModel, variant: variantToUse } : parsedModel) : undefined
     }
   }
 
@@ -180,15 +178,14 @@ Available categories: ${categoryNames.join(", ")}`,
 
   const unstableModel = actualModel?.toLowerCase()
   const categoryConfigModel = resolved.config.model?.toLowerCase()
-  const isUnstableAgent = resolved.config.is_unstable_agent === true || [unstableModel, categoryConfigModel].some(m => m ? m.includes("gemini") || m.includes("minimax") || m.includes("kimi") : false)
+  const isUnstableAgent =
+    resolved.config.is_unstable_agent === true ||
+    [unstableModel, categoryConfigModel].some((m) =>
+      m ? m.includes("gemini") || m.includes("minimax") || m.includes("kimi") : false,
+    )
 
-  const defaultProviderID = categoryModel?.providerID
-    ?? parseModelString(actualModel ?? "")?.providerID
-    ?? "opencode"
-  const configuredFallbackChain = buildFallbackChainFromModels(
-    normalizedConfiguredFallbackModels,
-    defaultProviderID,
-  )
+  const defaultProviderID = categoryModel?.providerID ?? parseModelString(actualModel ?? "")?.providerID ?? "opencode"
+  const configuredFallbackChain = buildFallbackChainFromModels(normalizedConfiguredFallbackModels, defaultProviderID)
 
   return {
     agentToUse: SISYPHUS_JUNIOR_AGENT,
