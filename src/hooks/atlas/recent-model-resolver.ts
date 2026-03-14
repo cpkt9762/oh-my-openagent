@@ -1,41 +1,50 @@
 import type { PluginInput } from "@opencode-ai/plugin"
-import {
-  findNearestMessageWithFields,
-  findNearestMessageWithFieldsFromSDK,
-} from "../../features/hook-message-injector"
+import { findNearestMessageWithFields, findNearestMessageWithFieldsFromSDK } from "../../features/hook-message-injector"
 import { getMessageDir, isSqliteBackend, normalizePromptTools, normalizeSDKResponse } from "../../shared"
 import type { ModelInfo } from "./types"
 
 type PromptContext = {
   model?: ModelInfo
+  variant?: string
   tools?: Record<string, boolean>
 }
 
 export async function resolveRecentPromptContextForSession(
   ctx: PluginInput,
-  sessionID: string
+  sessionID: string,
 ): Promise<PromptContext> {
   try {
     const messagesResp = await ctx.client.session.messages({ path: { id: sessionID } })
-    const messages = normalizeSDKResponse(messagesResp, [] as Array<{
-      info?: {
-        model?: ModelInfo
-        modelID?: string
-        providerID?: string
-        tools?: Record<string, boolean | "allow" | "deny" | "ask">
-      }
-    }>)
+    const messages = normalizeSDKResponse(
+      messagesResp,
+      [] as Array<{
+        info?: {
+          model?: ModelInfo
+          modelID?: string
+          providerID?: string
+          tools?: Record<string, boolean | "allow" | "deny" | "ask">
+        }
+      }>,
+    )
 
     for (let i = messages.length - 1; i >= 0; i--) {
       const info = messages[i].info
       const model = info?.model
       const tools = normalizePromptTools(info?.tools)
       if (model?.providerID && model?.modelID) {
-        return { model: { providerID: model.providerID, modelID: model.modelID }, tools }
+        return {
+          model: { providerID: model.providerID, modelID: model.modelID },
+          variant: (info as { variant?: string })?.variant,
+          tools,
+        }
       }
 
       if (info?.providerID && info?.modelID) {
-        return { model: { providerID: info.providerID, modelID: info.modelID }, tools }
+        return {
+          model: { providerID: info.providerID, modelID: info.modelID },
+          variant: (info as { variant?: string })?.variant,
+          tools,
+        }
       }
     }
   } catch {
@@ -52,14 +61,18 @@ export async function resolveRecentPromptContextForSession(
   const model = currentMessage?.model
   const tools = normalizePromptTools(currentMessage?.tools)
   if (!model?.providerID || !model?.modelID) {
-    return { tools }
+    return { variant: currentMessage?.model?.variant, tools }
   }
-  return { model: { providerID: model.providerID, modelID: model.modelID }, tools }
+  return {
+    model: { providerID: model.providerID, modelID: model.modelID },
+    variant: currentMessage?.model?.variant,
+    tools,
+  }
 }
 
 export async function resolveRecentModelForSession(
   ctx: PluginInput,
-  sessionID: string
+  sessionID: string,
 ): Promise<ModelInfo | undefined> {
   const context = await resolveRecentPromptContextForSession(ctx, sessionID)
   return context.model

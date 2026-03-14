@@ -1,11 +1,7 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 
 import type { BackgroundManager } from "../../features/background-agent"
-import {
-  createInternalAgentTextPart,
-  normalizeSDKResponse,
-  resolveInheritedPromptTools,
-} from "../../shared"
+import { createInternalAgentTextPart, normalizeSDKResponse, resolveInheritedPromptTools } from "../../shared"
 import {
   findNearestMessageWithFields,
   findNearestMessageWithFieldsFromSDK,
@@ -15,11 +11,7 @@ import { log } from "../../shared/logger"
 import { isSqliteBackend } from "../../shared/opencode-storage-detection"
 import { getAgentConfigKey } from "../../shared/agent-display-names"
 
-import {
-  CONTINUATION_PROMPT,
-  DEFAULT_SKIP_AGENTS,
-  HOOK_NAME,
-} from "./constants"
+import { CONTINUATION_PROMPT, DEFAULT_SKIP_AGENTS, HOOK_NAME } from "./constants"
 import { getMessageDir } from "./message-directory"
 import { getIncompleteCount } from "./todo"
 import type { ResolvedMessageInfo, Todo } from "./types"
@@ -107,15 +99,13 @@ export async function injectContinuation(args: {
         ? {
             providerID: previousMessage.model.providerID,
             modelID: previousMessage.model.modelID,
-            ...(previousMessage.model.variant
-              ? { variant: previousMessage.model.variant }
-              : {}),
+            ...(previousMessage.model.variant ? { variant: previousMessage.model.variant } : {}),
           }
         : undefined)
     tools = tools ?? previousMessage?.tools
   }
 
-  if (agentName && skipAgents.some(s => getAgentConfigKey(s) === getAgentConfigKey(agentName))) {
+  if (agentName && skipAgents.some((s) => getAgentConfigKey(s) === getAgentConfigKey(agentName))) {
     log(`[${HOOK_NAME}] Skipped: agent in skipAgents list`, { sessionID, agent: agentName })
     return
   }
@@ -148,12 +138,14 @@ ${todoList}`
     })
 
     const inheritedTools = resolveInheritedPromptTools(sessionID, tools)
+    const v = (model as { variant?: string } | undefined)?.variant
 
     await ctx.client.session.promptAsync({
       path: { id: sessionID },
       body: {
         agent: agentName,
-        ...(model !== undefined ? { model } : {}),
+        ...(model !== undefined ? { model: { providerID: model.providerID, modelID: model.modelID } } : {}),
+        ...(v ? { variant: v } : {}),
         ...(inheritedTools ? { tools: inheritedTools } : {}),
         parts: [createInternalAgentTextPart(prompt)],
       },

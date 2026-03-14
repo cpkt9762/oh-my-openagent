@@ -18,17 +18,7 @@ export async function injectBoulderContinuation(input: {
   backgroundManager?: BackgroundManager
   sessionState: SessionState
 }): Promise<void> {
-  const {
-    ctx,
-    sessionID,
-    planName,
-    remaining,
-    total,
-    agent,
-    worktreePath,
-    backgroundManager,
-    sessionState,
-  } = input
+  const { ctx, sessionID, planName, remaining, total, agent, worktreePath, backgroundManager, sessionState } = input
 
   const hasRunningBgTasks = backgroundManager
     ? backgroundManager.getTasksByParentSession(sessionID).some((t: { status: string }) => t.status === "running")
@@ -56,6 +46,7 @@ export async function injectBoulderContinuation(input: {
       body: {
         agent: agent ?? "atlas",
         ...(promptContext.model !== undefined ? { model: promptContext.model } : {}),
+        ...(promptContext.variant ? { variant: promptContext.variant } : {}),
         ...(inheritedTools ? { tools: inheritedTools } : {}),
         parts: [createInternalAgentTextPart(prompt)],
       },
