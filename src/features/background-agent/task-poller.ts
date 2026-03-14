@@ -9,25 +9,22 @@ import {
   DEFAULT_MESSAGE_STALENESS_TIMEOUT_MS,
   DEFAULT_STALE_TIMEOUT_MS,
   MIN_RUNTIME_BEFORE_STALE_MS,
-  TASK_TTL_MS,
+  DEFAULT_TASK_TTL_MS,
 } from "./constants"
 import { removeTaskToastTracking } from "./remove-task-toast-tracking"
 
 const TERMINAL_TASK_TTL_MS = 30 * 60 * 1000
 
-const TERMINAL_TASK_STATUSES = new Set<BackgroundTask["status"]>([
-  "completed",
-  "error",
-  "cancelled",
-  "interrupt",
-])
+const TERMINAL_TASK_STATUSES = new Set<BackgroundTask["status"]>(["completed", "error", "cancelled", "interrupt"])
 
 export function pruneStaleTasksAndNotifications(args: {
   tasks: Map<string, BackgroundTask>
   notifications: Map<string, BackgroundTask[]>
   onTaskPruned: (taskId: string, task: BackgroundTask, errorMessage: string) => void
+  config?: BackgroundTaskConfig
 }): void {
-  const { tasks, notifications, onTaskPruned } = args
+  const { tasks, notifications, onTaskPruned, config } = args
+  const taskTtlMs = config?.taskTtlMs ?? DEFAULT_TASK_TTL_MS
   const now = Date.now()
   const tasksWithPendingNotifications = new Set<string>()
 
@@ -52,18 +49,15 @@ export function pruneStaleTasksAndNotifications(args: {
       continue
     }
 
-    const timestamp = task.status === "pending"
-      ? task.queuedAt?.getTime()
-      : task.startedAt?.getTime()
+    const timestamp = task.status === "pending" ? task.queuedAt?.getTime() : task.startedAt?.getTime()
 
     if (!timestamp) continue
 
     const age = now - timestamp
-    if (age <= TASK_TTL_MS) continue
+    if (age <= taskTtlMs) continue
 
-    const errorMessage = task.status === "pending"
-      ? "Task timed out while queued (30 minutes)"
-      : "Task timed out after 30 minutes"
+    const errorMessage =
+      task.status === "pending" ? "Task timed out while queued (30 minutes)" : "Task timed out after 30 minutes"
 
     onTaskPruned(taskId, task, errorMessage)
   }
@@ -77,7 +71,7 @@ export function pruneStaleTasksAndNotifications(args: {
     const validNotifications = queued.filter((task) => {
       if (!task.startedAt) return false
       const age = now - task.startedAt.getTime()
-      return age <= TASK_TTL_MS
+      return age <= taskTtlMs
     })
 
     if (validNotifications.length === 0) {

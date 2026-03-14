@@ -16,7 +16,7 @@ import { ConcurrencyManager } from "./concurrency"
 import type { BackgroundTaskConfig, TmuxConfig } from "../../config/schema"
 import { isInsideTmux } from "../../shared/tmux"
 import { shouldRetryError, hasMoreFallbacks } from "../../shared/model-error-classifier"
-import { POLLING_INTERVAL_MS, TASK_CLEANUP_DELAY_MS } from "./constants"
+import { POLLING_INTERVAL_MS, DEFAULT_TASK_CLEANUP_DELAY_MS } from "./constants"
 
 import { subagentSessions } from "../claude-code-session-state"
 import { getTaskToastManager } from "../task-toast-manager"
@@ -1271,7 +1271,7 @@ export class BackgroundManager {
         log("[background-agent] Removed completed task from memory:", taskId)
         this.clearTaskHistoryWhenParentTasksGone(task?.parentSessionID)
       }
-    }, TASK_CLEANUP_DELAY_MS)
+    }, this.config?.taskCleanupDelayMs ?? DEFAULT_TASK_CLEANUP_DELAY_MS)
 
     this.completionTimers.set(taskId, timer)
   }
@@ -1688,6 +1688,7 @@ Use \`background_output(task_id="${task.id}")\` to retrieve this result when rea
     pruneStaleTasksAndNotifications({
       tasks: this.tasks,
       notifications: this.notifications,
+      config: this.config,
       onTaskPruned: (taskId, task, errorMessage) => {
         const wasPending = task.status === "pending"
         log("[background-agent] Pruning stale task:", {

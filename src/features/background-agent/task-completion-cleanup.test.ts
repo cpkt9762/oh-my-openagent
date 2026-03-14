@@ -2,7 +2,7 @@ declare const require: (name: string) => any
 const { describe, test, expect, afterEach } = require("bun:test")
 import { tmpdir } from "node:os"
 import type { PluginInput } from "@opencode-ai/plugin"
-import { TASK_CLEANUP_DELAY_MS } from "./constants"
+import { DEFAULT_TASK_CLEANUP_DELAY_MS as TASK_CLEANUP_DELAY_MS } from "./constants"
 import { BackgroundManager } from "./manager"
 import type { BackgroundTask } from "./types"
 
@@ -74,11 +74,7 @@ function createManager(enableParentSessionNotifications: boolean): {
     $: {} as PluginInput["$"],
   }
 
-  const manager = new BackgroundManager(
-    ctx,
-    undefined,
-    { enableParentSessionNotifications }
-  )
+  const manager = new BackgroundManager(ctx, undefined, { enableParentSessionNotifications })
   Reflect.set(manager, "client", client)
 
   return { manager, promptAsyncCalls }
@@ -90,7 +86,11 @@ function installFakeTimers(): FakeTimers {
   const callbacks = new Map<ReturnType<typeof setTimeout>, () => void>()
   const delays = new Map<ReturnType<typeof setTimeout>, number>()
 
-  globalThis.setTimeout = ((handler: Parameters<typeof setTimeout>[0], delay?: number, ...args: unknown[]): ReturnType<typeof setTimeout> => {
+  globalThis.setTimeout = ((
+    handler: Parameters<typeof setTimeout>[0],
+    delay?: number,
+    ...args: unknown[]
+  ): ReturnType<typeof setTimeout> => {
     if (typeof handler !== "function") {
       throw new Error("Expected function timeout handler")
     }
@@ -163,7 +163,13 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       const { manager } = createManager(false)
       managerUnderTest = manager
       fakeTimers = installFakeTimers()
-      const taskA = createTask({ id: "task-a", parentSessionID: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const taskA = createTask({
+        id: "task-a",
+        parentSessionID: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-03-11T00:01:00.000Z"),
+      })
       const taskB = createTask({ id: "task-b", parentSessionID: "parent-1", description: "task B", status: "running" })
       getTasks(manager).set(taskA.id, taskA)
       getTasks(manager).set(taskB.id, taskB)
@@ -188,7 +194,13 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       const { manager, promptAsyncCalls } = createManager(true)
       managerUnderTest = manager
       fakeTimers = installFakeTimers()
-      const taskA = createTask({ id: "task-a", parentSessionID: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const taskA = createTask({
+        id: "task-a",
+        parentSessionID: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-03-11T00:01:00.000Z"),
+      })
       const taskB = createTask({ id: "task-b", parentSessionID: "parent-1", description: "task B", status: "running" })
       getTasks(manager).set(taskA.id, taskA)
       getTasks(manager).set(taskB.id, taskB)
@@ -226,7 +238,13 @@ describe("BackgroundManager.notifyParentSession cleanup scheduling", () => {
       const { manager } = createManager(false)
       managerUnderTest = manager
       fakeTimers = installFakeTimers()
-      const task = createTask({ id: "task-a", parentSessionID: "parent-1", description: "task A", status: "completed", completedAt: new Date("2026-03-11T00:01:00.000Z") })
+      const task = createTask({
+        id: "task-a",
+        parentSessionID: "parent-1",
+        description: "task A",
+        status: "completed",
+        completedAt: new Date("2026-03-11T00:01:00.000Z"),
+      })
       getTasks(manager).set(task.id, task)
       getPendingByParent(manager).set(task.parentSessionID, new Set([task.id]))
 
