@@ -64,6 +64,7 @@ export async function injectBoulderContinuation(input: {
       body: {
         agent: agent ?? "atlas",
         ...(promptContext.model !== undefined ? { model: promptContext.model } : {}),
+        ...(promptContext.variant ? { variant: promptContext.variant } : {}),
         ...(inheritedTools ? { tools: inheritedTools } : {}),
         parts: [createInternalAgentTextPart(prompt)],
       },

@@ -2,11 +2,7 @@ import type { PluginInput } from "@opencode-ai/plugin"
 
 import type { BackgroundManager } from "../../features/background-agent"
 import { getSessionAgent } from "../../features/claude-code-session-state"
-import {
-  createInternalAgentTextPart,
-  normalizeSDKResponse,
-  resolveInheritedPromptTools,
-} from "../../shared"
+import { createInternalAgentTextPart, normalizeSDKResponse, resolveInheritedPromptTools } from "../../shared"
 import {
   findNearestMessageWithFields,
   findNearestMessageWithFieldsFromSDK,
@@ -16,11 +12,7 @@ import { log } from "../../shared/logger"
 import { isSqliteBackend } from "../../shared/opencode-storage-detection"
 import { getAgentConfigKey } from "../../shared/agent-display-names"
 
-import {
-  CONTINUATION_PROMPT,
-  DEFAULT_SKIP_AGENTS,
-  HOOK_NAME,
-} from "./constants"
+import { CONTINUATION_PROMPT, DEFAULT_SKIP_AGENTS, HOOK_NAME } from "./constants"
 import { isCompactionGuardActive } from "./compaction-guard"
 import { getMessageDir } from "./message-directory"
 import { getIncompleteCount } from "./todo"
@@ -92,6 +84,7 @@ export async function injectContinuation(args: {
 
   let agentName = resolvedInfo?.agent ?? getSessionAgent(sessionID)
   let model = resolvedInfo?.model
+  let variant: string | undefined
   let tools = resolvedInfo?.tools
 
   if (!agentName || !model) {
@@ -106,18 +99,13 @@ export async function injectContinuation(args: {
     model =
       model ??
       (previousMessage?.model?.providerID && previousMessage?.model?.modelID
-        ? {
-            providerID: previousMessage.model.providerID,
-            modelID: previousMessage.model.modelID,
-            ...(previousMessage.model.variant
-              ? { variant: previousMessage.model.variant }
-              : {}),
-          }
+        ? { providerID: previousMessage.model.providerID, modelID: previousMessage.model.modelID }
         : undefined)
+    variant = (previousMessage?.model as Record<string, unknown>)?.variant as string | undefined
     tools = tools ?? previousMessage?.tools
   }
 
-  if (agentName && skipAgents.some(s => getAgentConfigKey(s) === getAgentConfigKey(agentName))) {
+  if (agentName && skipAgents.some((s) => getAgentConfigKey(s) === getAgentConfigKey(agentName))) {
     log(`[${HOOK_NAME}] Skipped: agent in skipAgents list`, { sessionID, agent: agentName })
     return
   }
@@ -164,6 +152,7 @@ ${todoList}`
       body: {
         agent: agentName,
         ...(model !== undefined ? { model } : {}),
+        ...(variant ? { variant } : {}),
         ...(inheritedTools ? { tools: inheritedTools } : {}),
         parts: [createInternalAgentTextPart(prompt)],
       },
