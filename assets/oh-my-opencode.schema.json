@@ -4683,6 +4683,14 @@
             }
           },
           "additionalProperties": false
+        },
+        "taskTtlMs": {
+          "type": "number",
+          "minimum": 600000
+        },
+        "taskCleanupDelayMs": {
+          "type": "number",
+          "minimum": 60000
         }
       },
       "additionalProperties": false

@@ -2,6 +2,7 @@ import type { PluginInput } from "@opencode-ai/plugin"
 import type { BackgroundTask, LaunchInput } from "./types"
 
 export const TASK_TTL_MS = 30 * 60 * 1000
+export const DEFAULT_TASK_TTL_MS = 120 * 60 * 1000
 export const TERMINAL_TASK_TTL_MS = 30 * 60 * 1000
 export const MIN_STABILITY_TIME_MS = 10 * 1000
 export const DEFAULT_STALE_TIMEOUT_MS = 2_700_000
@@ -13,6 +14,7 @@ export const MIN_RUNTIME_BEFORE_STALE_MS = 30_000
 export const MIN_IDLE_TIME_MS = 5000
 export const POLLING_INTERVAL_MS = 3000
 export const TASK_CLEANUP_DELAY_MS = 10 * 60 * 1000
+export const DEFAULT_TASK_CLEANUP_DELAY_MS = 30 * 60 * 1000
 export const TMUX_CALLBACK_DELAY_MS = 200
 
 export type ProcessCleanupEvent = NodeJS.Signals | "beforeExit" | "exit"
@@ -37,10 +39,10 @@ export interface BackgroundEvent {
 }
 
 export interface Todo {
-  content: string;
-  status: string;
-  priority: string;
-  id?: string;
+  content: string
+  status: string
+  priority: string
+  id?: string
 }
 
 export interface QueueItem {
