@@ -17,7 +17,7 @@ import { ConcurrencyManager } from "./concurrency"
 import type { BackgroundTaskConfig, TmuxConfig } from "../../config/schema"
 import { isInsideTmux } from "../../shared/tmux"
 import { shouldRetryError, hasMoreFallbacks } from "../../shared/model-error-classifier"
-import { DEFAULT_TASK_CLEANUP_DELAY_MS, POLLING_INTERVAL_MS, TASK_TTL_MS } from "./constants"
+import { POLLING_INTERVAL_MS, TASK_CLEANUP_DELAY_MS, TASK_TTL_MS } from "./constants"
 
 import { subagentSessions } from "../claude-code-session-state"
 import { getTaskToastManager } from "../task-toast-manager"
@@ -1407,7 +1407,7 @@ export class BackgroundManager {
         SessionCategoryRegistry.remove(task.sessionID)
       }
       log("[background-agent] Removed completed task from memory:", taskId)
-    }, this.config?.taskCleanupDelayMs ?? DEFAULT_TASK_CLEANUP_DELAY_MS)
+    }, this.config?.taskCleanupDelayMs ?? TASK_CLEANUP_DELAY_MS)
 
     this.completionTimers.set(taskId, timer)
   }
