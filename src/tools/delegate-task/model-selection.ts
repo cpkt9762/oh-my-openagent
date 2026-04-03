@@ -2,7 +2,7 @@ import type { FallbackEntry } from "../../shared/model-requirements"
 import { normalizeModel } from "../../shared/model-normalization"
 import { fuzzyMatchModel } from "../../shared/model-availability"
 import { transformModelForProvider } from "../../shared/provider-model-id-transform"
-import { hasConnectedProvidersCache, hasProviderModelsCache } from "../../shared/connected-providers-cache"
+import { hasConnectedProvidersCache, hasProviderModelsCache, readConnectedProvidersCache } from "../../shared/connected-providers-cache"
 import { log } from "../../shared/logger"
 import { parseModelString, parseVariantFromModelID } from "./model-string-parser"
 
@@ -59,6 +59,8 @@ export function resolveModelForDelegateTask(input: {
     return { model: userModel }
   }
 
+  const connectedProviders = input.availableModels.size === 0 ? readConnectedProvidersCache() : null
+
   // Before provider cache is created (first run), skip model resolution entirely.
   // OpenCode will use its system default model when no model is specified in the prompt.
   if (input.availableModels.size === 0 && !hasProviderModelsCache() && !hasConnectedProvidersCache()) {
@@ -77,7 +79,15 @@ export function resolveModelForDelegateTask(input: {
     }
 
     if (input.availableModels.size === 0) {
-      return { model: categoryDefault }
+      const categoryProvider = categoryDefault.includes("/") ? categoryDefault.split("/")[0] : undefined
+      if (!connectedProviders || !categoryProvider || connectedProviders.includes(categoryProvider)) {
+        return { model: categoryDefault }
+      }
+
+      log("[resolveModelForDelegateTask] skipping disconnected category default on cold cache", {
+        categoryDefault,
+        connectedProviders,
+      })
     }
 
     const parts = categoryDefault.split("/")
@@ -95,9 +105,19 @@ export function resolveModelForDelegateTask(input: {
   const userFallbackModels = input.userFallbackModels
   if (userFallbackModels && userFallbackModels.length > 0) {
     if (input.availableModels.size === 0) {
-      const first = userFallbackModels[0] ? parseUserFallbackModel(userFallbackModels[0]) : undefined
-      if (first) {
-        return { model: first.baseModel, variant: first.variant, matchedFallback: true }
+      for (const fallbackModel of userFallbackModels) {
+        const parsedFallback = parseUserFallbackModel(fallbackModel)
+        if (!parsedFallback) continue
+
+        if (
+          connectedProviders &&
+          parsedFallback.providerHint &&
+          !parsedFallback.providerHint.some((provider) => connectedProviders.includes(provider))
+        ) {
+          continue
+        }
+
+        return { model: parsedFallback.baseModel, variant: parsedFallback.variant, matchedFallback: true }
       }
     } else {
       for (const fallbackModel of userFallbackModels) {
@@ -115,11 +135,28 @@ export function resolveModelForDelegateTask(input: {
   const fallbackChain = input.fallbackChain
   if (fallbackChain && fallbackChain.length > 0) {
     if (input.availableModels.size === 0) {
-      const first = fallbackChain[0]
-      const provider = first?.providers?.[0]
-      if (provider) {
-        const transformedModelId = transformModelForProvider(provider, first.model)
-        return { model: `${provider}/${transformedModelId}`, variant: first.variant, fallbackEntry: first, matchedFallback: true }
+      if (connectedProviders) {
+        const connectedSet = new Set(connectedProviders)
+        for (const entry of fallbackChain) {
+          for (const provider of entry.providers) {
+            if (connectedSet.has(provider)) {
+              const transformedModelId = transformModelForProvider(provider, entry.model)
+              log("[resolveModelForDelegateTask] fallback chain resolved via connected provider", {
+                provider,
+                model: entry.model,
+              })
+              return { model: `${provider}/${transformedModelId}`, variant: entry.variant, fallbackEntry: entry, matchedFallback: true }
+            }
+          }
+        }
+        log("[resolveModelForDelegateTask] no connected provider found in fallback chain")
+      } else {
+        const first = fallbackChain[0]
+        const provider = first?.providers?.[0]
+        if (provider) {
+          const transformedModelId = transformModelForProvider(provider, first.model)
+          return { model: `${provider}/${transformedModelId}`, variant: first.variant, fallbackEntry: first, matchedFallback: true }
+        }
       }
     } else {
       for (const entry of fallbackChain) {

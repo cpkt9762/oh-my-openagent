@@ -5,6 +5,7 @@ import type { HookName } from "./config"
 
 import { createHooks } from "./create-hooks"
 import { createManagers } from "./create-managers"
+import { createRuntimeTmuxConfig } from "./create-runtime-tmux-config"
 import { createTools } from "./create-tools"
 import { createPluginInterface } from "./plugin-interface"
 import { createPluginDispose, type PluginDispose } from "./plugin-dispose"
@@ -12,7 +13,9 @@ import { createPluginDispose, type PluginDispose } from "./plugin-dispose"
 import { loadPluginConfig } from "./plugin-config"
 import { createModelCacheState } from "./plugin-state"
 import { createFirstMessageVariantGate } from "./shared/first-message-variant"
-import { injectServerAuthIntoClient, log } from "./shared"
+import { injectServerAuthIntoClient, log, logLegacyPluginStartupWarning } from "./shared"
+import { detectExternalSkillPlugin, getSkillPluginConflictWarning } from "./shared/external-plugin-detector"
+import { lspManager } from "./tools/lsp/client"
 import { startTmuxCheck } from "./tools"
 
 let activePluginDispose: PluginDispose | null = null
@@ -23,6 +26,13 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
   log("[OhMyOpenCodePlugin] ENTRY - plugin loading", {
     directory: ctx.directory,
   })
+  logLegacyPluginStartupWarning()
+
+  // Detect conflicting skill plugins (e.g., opencode-skills)
+  const skillPluginCheck = detectExternalSkillPlugin(ctx.directory)
+  if (skillPluginCheck.detected && skillPluginCheck.pluginName) {
+    console.warn(getSkillPluginConflictWarning(skillPluginCheck.pluginName))
+  }
 
   injectServerAuthIntoClient(ctx.client)
   startTmuxCheck()
@@ -36,13 +46,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
 
   const firstMessageVariantGate = createFirstMessageVariantGate()
 
-  const tmuxConfig = {
-    enabled: pluginConfig.tmux?.enabled ?? false,
-    layout: pluginConfig.tmux?.layout ?? "main-vertical",
-    main_pane_size: pluginConfig.tmux?.main_pane_size ?? 60,
-    main_pane_min_width: pluginConfig.tmux?.main_pane_min_width ?? 120,
-    agent_pane_min_width: pluginConfig.tmux?.agent_pane_min_width ?? 40,
-  }
+  const tmuxConfig = createRuntimeTmuxConfig(pluginConfig)
 
   const modelCacheState = createModelCacheState()
 
@@ -74,6 +78,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
   const dispose = createPluginDispose({
     backgroundManager: managers.backgroundManager,
     skillMcpManager: managers.skillMcpManager,
+    lspManager,
     disposeHooks: hooks.disposeHooks,
   })
 
@@ -89,6 +94,7 @@ const OhMyOpenCodePlugin: Plugin = async (ctx) => {
   activePluginDispose = dispose
 
   return {
+    name: "oh-my-openagent",
     ...pluginInterface,
 
     "experimental.session.compacting": async (

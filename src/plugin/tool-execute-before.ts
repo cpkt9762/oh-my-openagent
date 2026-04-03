@@ -11,6 +11,16 @@ import { readState, writeState } from "../hooks/ralph-loop/storage"
 
 import type { CreatedHooks } from "../create-hooks"
 
+function getLoopCommandArguments(args: Record<string, unknown>, command: "ralph-loop" | "ulw-loop"): string {
+  const rawUserMessage = typeof args.user_message === "string" ? args.user_message.trim() : ""
+  if (rawUserMessage) {
+    return rawUserMessage
+  }
+
+  const rawName = typeof args.name === "string" ? args.name : ""
+  return rawName.replace(new RegExp(`^/?(${command})\\s*`, "i"), "")
+}
+
 export function createToolExecuteBeforeHandler(args: {
   ctx: PluginContext
   hooks: CreatedHooks
@@ -55,6 +65,7 @@ export function createToolExecuteBeforeHandler(args: {
     await hooks.questionLabelTruncator?.["tool.execute.before"]?.(input, output)
     await hooks.claudeCodeHooks?.["tool.execute.before"]?.(input, output)
     await hooks.nonInteractiveEnv?.["tool.execute.before"]?.(input, output)
+    await hooks.bashFileReadGuard?.["tool.execute.before"]?.(input, output)
     await hooks.commentChecker?.["tool.execute.before"]?.(input, output)
     await hooks.directoryAgentsInjector?.["tool.execute.before"]?.(input, output)
     await hooks.directoryReadmeInjector?.["tool.execute.before"]?.(input, output)
@@ -136,7 +147,7 @@ export function createToolExecuteBeforeHandler(args: {
       const sessionID = input.sessionID || getMainSessionID()
 
       if (command === "ralph-loop" && sessionID) {
-        const rawArgs = rawName?.replace(/^\/?(ralph-loop)\s*/i, "") || ""
+        const rawArgs = getLoopCommandArguments(output.args, "ralph-loop")
         const parsedArguments = parseRalphLoopArguments(rawArgs)
 
         hooks.ralphLoop.startLoop(sessionID, parsedArguments.prompt, {
@@ -147,7 +158,7 @@ export function createToolExecuteBeforeHandler(args: {
       } else if (command === "cancel-ralph" && sessionID) {
         hooks.ralphLoop.cancelLoop(sessionID)
       } else if (command === "ulw-loop" && sessionID) {
-        const rawArgs = rawName?.replace(/^\/?(ulw-loop)\s*/i, "") || ""
+        const rawArgs = getLoopCommandArguments(output.args, "ulw-loop")
         const parsedArguments = parseRalphLoopArguments(rawArgs)
 
         hooks.ralphLoop.startLoop(sessionID, parsedArguments.prompt, {

@@ -93,7 +93,7 @@ describe("sisyphus-task", () => {
 
       // when / #then
       expect(category).toBeDefined()
-      expect(category.model).toBe("openai/gpt-5.3-codex")
+      expect(category.model).toBe("openai/gpt-5.4")
       expect(category.variant).toBe("medium")
     })
 
@@ -465,7 +465,7 @@ describe("sisyphus-task", () => {
        expect(args.subagent_type).toBe("Sisyphus-Junior")
     }, { timeout: 10000 })
 
-    test("category overrides subagent_type and still maps to sisyphus-junior", async () => {
+    test("prefers category over subagent_type when both are provided", async () => {
       //#given
       const { createDelegateTask } = require("./tools")
 
@@ -507,14 +507,7 @@ describe("sisyphus-task", () => {
         abort: new AbortController().signal,
       }
 
-      const args: {
-        description: string
-        prompt: string
-        category: string
-        subagent_type: string
-        run_in_background: boolean
-        load_skills: string[]
-      } = {
+      const args = {
         description: "Override test",
         prompt: "Do something",
         category: "quick",
@@ -524,11 +517,10 @@ describe("sisyphus-task", () => {
       }
 
       //#when
-      const result = await tool.execute(args, toolContext)
+      await tool.execute(args, toolContext)
 
-      //#then
+      //#then - category takes precedence, subagent_type is overridden to sisyphus-junior
       expect(args.subagent_type).toBe("Sisyphus-Junior")
-      expect(result).toContain("Background task launched")
     }, { timeout: 10000 })
 
     test("proceeds without error when systemDefaultModel is undefined", async () => {
@@ -713,8 +705,8 @@ describe("sisyphus-task", () => {
     })
 
     test("blocks requiresModel when availability is known and missing the required model", () => {
-      // given
-      const categoryName = "deep"
+      // given - artistry has requiresModel: gemini-3.1-pro
+      const categoryName = "artistry"
       const availableModels = new Set<string>(["anthropic/claude-opus-4-6"])
 
       // when
@@ -728,8 +720,8 @@ describe("sisyphus-task", () => {
     })
 
     test("blocks requiresModel when availability is empty", () => {
-      // given
-      const categoryName = "deep"
+      // given - artistry has requiresModel: gemini-3.1-pro
+      const categoryName = "artistry"
       const availableModels = new Set<string>()
 
       // when
@@ -1460,6 +1452,92 @@ describe("sisyphus-task", () => {
       // then
       expect(launchCalled).toBe(true)
       expect(result).toContain("Background task launched")
+    }, { timeout: 10000 })
+
+    test("#given concurrent background launches from the same parent #when one parent call aborts during session wait #then sibling launch is not interrupted", async () => {
+      // given
+      const { createDelegateTask } = require("./tools")
+      const firstAbortController = new AbortController()
+      const secondAbortController = new AbortController()
+      const taskStates = new Map([
+        ["bg_tool_first", { reads: 0, abortOnFirstRead: true, sessionID: "ses_tool_first" }],
+        ["bg_tool_second", { reads: 0, abortOnFirstRead: false, sessionID: "ses_tool_second" }],
+      ])
+      let launchCount = 0
+      const mockManager = {
+        launch: async () => {
+          launchCount += 1
+          return launchCount === 1
+            ? {
+                id: "bg_tool_first",
+                sessionID: undefined,
+                description: "Tool first",
+                agent: "Sisyphus-Junior",
+                status: "running",
+              }
+            : {
+                id: "bg_tool_second",
+                sessionID: undefined,
+                description: "Tool second",
+                agent: "Sisyphus-Junior",
+                status: "running",
+              }
+        },
+        getTask: (taskID: string) => {
+          const state = taskStates.get(taskID)
+          if (!state) return undefined
+          state.reads += 1
+          if (state.abortOnFirstRead && state.reads === 1) {
+            firstAbortController.abort()
+          }
+          return state.reads >= 2
+            ? { sessionID: state.sessionID, status: "running" }
+            : { sessionID: undefined, status: "pending" }
+        },
+      }
+      const mockClient = {
+        app: { agents: async () => ({ data: [] }) },
+        config: { get: async () => ({ data: { model: SYSTEM_DEFAULT_MODEL } }) },
+        model: { list: async () => [] },
+        session: {
+          create: async () => ({ data: { id: "ses_bg_explicit_true" } }),
+          prompt: async () => ({ data: {} }),
+          promptAsync: async () => ({ data: {} }),
+          messages: async () => ({ data: [] }),
+        },
+      }
+      const tool = createDelegateTask({ manager: mockManager, client: mockClient })
+
+      // when
+      const [firstResult, secondResult] = await Promise.all([
+        tool.execute(
+          {
+            description: "Tool first",
+            prompt: "Run background",
+            category: "quick",
+            run_in_background: true,
+            load_skills: [],
+          },
+          { sessionID: "parent-session", messageID: "parent-message-1", agent: "sisyphus", abort: firstAbortController.signal }
+        ),
+        tool.execute(
+          {
+            description: "Tool second",
+            prompt: "Run background",
+            category: "quick",
+            run_in_background: true,
+            load_skills: [],
+          },
+          { sessionID: "parent-session", messageID: "parent-message-2", agent: "sisyphus", abort: secondAbortController.signal }
+        ),
+      ])
+
+      // then
+      expect(firstResult).toContain("Background task launched")
+      expect(firstResult).not.toContain("Task failed to start")
+      expect(secondResult).toContain("Background task launched")
+      expect(secondResult).toContain("session_id: ses_tool_second")
+      expect(secondResult).not.toContain("interrupt")
     }, { timeout: 10000 })
   })
 
@@ -3139,6 +3217,35 @@ describe("sisyphus-task", () => {
 
       // then
       expect(result).toBe(prompt)
+    })
+
+    test("excludes TDD line when tddEnabled is false", () => {
+      // given
+      const { buildTaskPrompt } = require("./tools")
+      const prompt = "Create a work plan for this feature"
+
+      // when
+      const result = buildTaskPrompt(prompt, "plan", false)
+
+      // then
+      expect(result).toContain(prompt)
+      expect(result).toContain("Answer in English.")
+      expect(result).toContain("Write the plan in English.")
+      expect(result).toContain("Plan well for ultrawork execution.")
+      expect(result).toContain("Include a clear atomic commit strategy.")
+      expect(result).not.toContain("Use TDD-oriented planning.")
+    })
+
+    test("includes TDD line when tddEnabled is true", () => {
+      // given
+      const { buildTaskPrompt } = require("./tools")
+      const prompt = "Create a work plan for this feature"
+
+      // when
+      const result = buildTaskPrompt(prompt, "plan", true)
+
+      // then
+      expect(result).toContain("Use TDD-oriented planning.")
     })
   })
 

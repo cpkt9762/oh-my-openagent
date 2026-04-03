@@ -1,5 +1,15 @@
 declare const require: (name: string) => any
-const { describe, test, expect, beforeEach, afterEach, spyOn } = require("bun:test")
+const { describe, test, expect, beforeEach, afterEach, spyOn, mock } = require("bun:test")
+
+mock.module("../../shared/connected-providers-cache", () => ({
+  readConnectedProvidersCache: () => null,
+  readProviderModelsCache: () => null,
+  hasConnectedProvidersCache: () => false,
+  hasProviderModelsCache: () => false,
+  writeProviderModelsCache: () => {},
+  updateConnectedProvidersCache: () => {},
+}))
+
 import { getSessionPromptParams, clearSessionPromptParams } from "../../shared/session-prompt-params-state"
 import { tmpdir } from "node:os"
 import type { PluginInput } from "@opencode-ai/plugin"
@@ -2404,6 +2414,91 @@ describe("BackgroundManager - Non-blocking Queue Integration", () => {
       expect(manager.getTask(secondTask.id)?.sessionID).toBe(secondSessionID)
     })
 
+    test("should keep sibling launch running when concurrent launches share a parent and the first is cancelled during session creation", async () => {
+      // given
+      const firstSessionID = "ses-first-concurrent-cancelled"
+      const secondSessionID = "ses-second-concurrent-survives"
+      let createCallCount = 0
+      let resolveFirstCreate: ((value: { data: { id: string } }) => void) | undefined
+      let resolveFirstCreateStarted: (() => void) | undefined
+      let resolveSecondPromptAsync: (() => void) | undefined
+      const firstCreateStarted = new Promise<void>((resolve) => {
+        resolveFirstCreateStarted = resolve
+      })
+      const secondPromptAsyncStarted = new Promise<void>((resolve) => {
+        resolveSecondPromptAsync = resolve
+      })
+
+      manager.shutdown()
+      manager = new BackgroundManager(
+        {
+          client: {
+            session: {
+              create: async () => {
+                createCallCount += 1
+                if (createCallCount === 1) {
+                  resolveFirstCreateStarted?.()
+                  return await new Promise<{ data: { id: string } }>((resolve) => {
+                    resolveFirstCreate = resolve
+                  })
+                }
+
+                return { data: { id: secondSessionID } }
+              },
+              get: async () => ({ data: { directory: "/test/dir" } }),
+              prompt: async () => ({}),
+              promptAsync: async ({ path }: { path: { id: string } }) => {
+                if (path.id === secondSessionID) {
+                  resolveSecondPromptAsync?.()
+                }
+
+                return {}
+              },
+              messages: async () => ({ data: [] }),
+              todo: async () => ({ data: [] }),
+              status: async () => ({ data: {} }),
+              abort: async () => ({}),
+            },
+          },
+          directory: tmpdir(),
+        } as unknown as PluginInput,
+        { defaultConcurrency: 1 }
+      )
+
+      const input = {
+        description: "Test task",
+        prompt: "Do something",
+        agent: "test-agent",
+        parentSessionID: "parent-session",
+        parentMessageID: "parent-message",
+      }
+
+      // when
+      const [firstTask, secondTask] = await Promise.all([
+        manager.launch(input),
+        manager.launch(input),
+      ])
+      await firstCreateStarted
+
+      const cancelled = await manager.cancelTask(firstTask.id, {
+        source: "test",
+        abortSession: false,
+      })
+      resolveFirstCreate?.({ data: { id: firstSessionID } })
+
+      await Promise.race([
+        secondPromptAsyncStarted,
+        new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timeout")), 100)),
+      ])
+
+      // then
+      expect(cancelled).toBe(true)
+      expect(createCallCount).toBe(2)
+      expect(manager.getTask(firstTask.id)?.status).toBe("cancelled")
+      expect(manager.getTask(secondTask.id)?.status).toBe("running")
+      expect(manager.getTask(secondTask.id)?.sessionID).toBe(secondSessionID)
+    })
+
     test("should keep task cancelled and abort the session when cancellation wins during session creation", async () => {
       // given
       const createdSessionID = "ses-cancelled-during-create"
@@ -3312,6 +3407,9 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
         prompt: async () => ({}),
         promptAsync: async () => ({}),
         abort: async () => ({}),
+        get: async () => {
+          throw new Error("missing")
+        },
       },
     }
     const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput, { staleTimeoutMs: 180_000 })
@@ -3348,6 +3446,9 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
         prompt: async () => ({}),
         promptAsync: async () => ({}),
         abort: async () => ({}),
+        get: async () => {
+          throw new Error("missing")
+        },
       },
     }
     const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput, { staleTimeoutMs: 180_000 })
@@ -3437,6 +3538,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
       status: "running",
       startedAt: new Date(Date.now() - 15 * 60 * 1000),
       progress: undefined,
+      consecutiveMissedPolls: 2,
     }
 
     getTaskMap(manager).set(task.id, task)
@@ -3454,6 +3556,10 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
       session: {
         prompt: async () => ({}),
         promptAsync: async () => ({}),
+        get: async () => ({
+          error: { message: "Session not found", status: 404 },
+          data: undefined,
+        }),
         abort: async () => ({}),
       },
     }
@@ -3471,6 +3577,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
       status: "running",
       startedAt: new Date(Date.now() - 15 * 60 * 1000),
       progress: undefined,
+      consecutiveMissedPolls: 2,
     }
 
     getTaskMap(manager).set(task.id, task)
@@ -3478,12 +3585,12 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
     //#when — no progress update for 15 minutes
     await manager["checkAndInterruptStaleTasks"]({})
 
-    //#then — killed after messageStalenessTimeout
+    //#then — killed because session gone from status registry
     expect(task.status).toBe("cancelled")
-    expect(task.error).toContain("no activity")
+    expect(task.error).toContain("session gone from status registry")
   })
 
-  test("should NOT interrupt task with no lastUpdate within messageStalenessTimeout", async () => {
+  test("should NOT interrupt task with no lastUpdate within session-gone timeout", async () => {
     //#given
     const client = {
       session: {
@@ -3492,7 +3599,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
         abort: async () => ({}),
       },
     }
-    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput, { messageStalenessTimeoutMs: 600_000 })
+    const manager = new BackgroundManager({ client, directory: tmpdir() } as unknown as PluginInput, { messageStalenessTimeoutMs: 600_000, sessionGoneTimeoutMs: 600_000 })
 
     const task: BackgroundTask = {
       id: "task-fresh-no-update",
@@ -3509,7 +3616,7 @@ describe("BackgroundManager.checkAndInterruptStaleTasks", () => {
 
     getTaskMap(manager).set(task.id, task)
 
-    //#when — only 5 min since start, within 10min timeout
+    //#when — only 5 min since start, within 10min session-gone timeout
     await manager["checkAndInterruptStaleTasks"]({})
 
     //#then — task survives
@@ -3728,6 +3835,9 @@ describe("BackgroundManager.handleEvent - session.deleted cascade", () => {
       properties: { info: { id: parentSessionID } },
     })
 
+    // Flush twice: cancelTask now awaits session.abort() before cleanupPendingByParent,
+    // so we need additional microtask ticks to let the cascade complete fully.
+    await flushBackgroundNotifications()
     await flushBackgroundNotifications()
 
     // then
@@ -4263,7 +4373,7 @@ describe("BackgroundManager.pruneStaleTasksAndNotifications - removes pruned tas
     expect(retainedTask?.status).toBe("error")
     expect(getTaskMap(manager).has(staleTask.id)).toBe(true)
     expect(notifications).toHaveLength(1)
-    expect(notifications[0]).toContain("[ALL BACKGROUND TASKS COMPLETE]")
+    expect(notifications[0]).toContain("[ALL BACKGROUND TASKS FINISHED")
     expect(notifications[0]).toContain(staleTask.description)
     expect(getCompletionTimers(manager).has(staleTask.id)).toBe(true)
     expect(removeTaskCalls).toContain(staleTask.id)

@@ -8,12 +8,27 @@ describe("checkAndInterruptStaleTasks", () => {
   const mockClient = {
     session: {
       abort: mock(() => Promise.resolve()),
+      get: mock(() => Promise.resolve({ data: { id: "ses-1" } })),
     },
   }
   const mockConcurrencyManager = {
     release: mock(() => {}),
   }
   const mockNotify = mock(() => Promise.resolve())
+
+  function createDeferredPromise(): {
+    promise: Promise<void>
+    resolve: () => void
+  } {
+    let resolvePromise = () => {}
+    const promise = new Promise<void>((resolve) => {
+      resolvePromise = resolve
+    })
+    return {
+      promise,
+      resolve: resolvePromise,
+    }
+  }
 
   function createRunningTask(overrides: Partial<BackgroundTask> = {}): BackgroundTask {
     return {
@@ -35,6 +50,11 @@ describe("checkAndInterruptStaleTasks", () => {
   beforeEach(() => {
     fixedTime = Date.now()
     spyOn(globalThis.Date, "now").mockReturnValue(fixedTime)
+    mockClient.session.abort.mockClear()
+    mockClient.session.get.mockReset()
+    mockClient.session.get.mockResolvedValue({ data: { id: "ses-1" } })
+    mockConcurrencyManager.release.mockClear()
+    mockNotify.mockClear()
   })
 
   afterEach(() => {
@@ -106,6 +126,39 @@ describe("checkAndInterruptStaleTasks", () => {
     //#then
     expect(task.status).toBe("cancelled")
     expect(task.error).toContain("no activity")
+  })
+
+  it("should await abort before resolving for no-progress stale interruption", async () => {
+    //#given
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 15 * 60 * 1000),
+      progress: undefined,
+    })
+    const deferred = createDeferredPromise()
+    mockClient.session.abort.mockImplementationOnce(() => deferred.promise)
+
+    //#when
+    const interruptPromise = checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { messageStalenessTimeoutMs: 600_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+    })
+    let settled = false
+    void interruptPromise.then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+
+    //#then
+    expect(settled).toBe(false)
+
+    deferred.resolve()
+    await interruptPromise
+
+    expect(settled).toBe(true)
   })
 
   it("should NOT interrupt tasks with NO progress.lastUpdate that are within messageStalenessTimeoutMs", async () => {
@@ -288,29 +341,236 @@ describe("checkAndInterruptStaleTasks", () => {
     expect(task.status).toBe("running")
   })
 
-  it("should use default stale timeout when session status is unknown/missing", async () => {
-    //#given — lastUpdate exceeds stale timeout, session not in status map
+  it("should NOT cancel healthy task on first missing status poll", async () => {
+    //#given — one missing poll should not be enough to declare the session gone
     const task = createRunningTask({
       startedAt: new Date(Date.now() - 300_000),
       progress: {
         toolCalls: 1,
-        lastUpdate: new Date(Date.now() - 200_000),
+        lastUpdate: new Date(Date.now() - 120_000),
       },
     })
 
-    //#when — empty sessionStatuses (session not found)
+    //#when
     await checkAndInterruptStaleTasks({
       tasks: [task],
       client: mockClient as never,
-      config: { staleTimeoutMs: 180_000 },
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
       concurrencyManager: mockConcurrencyManager as never,
       notifyParentSession: mockNotify,
       sessionStatuses: {},
     })
 
-    //#then — unknown session treated as potentially stale, apply default timeout
+    //#then
+    expect(task.status).toBe("running")
+    expect(task.consecutiveMissedPolls).toBe(1)
+    expect(mockClient.session.get).not.toHaveBeenCalled()
+  })
+
+  it("should NOT cancel task when session.get confirms the session still exists", async () => {
+    //#given — repeated missing polls but direct lookup still succeeds
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+
+    //#when
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+
+    //#then
+    expect(task.status).toBe("running")
+    expect(task.consecutiveMissedPolls).toBe(0)
+    expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: "ses-1" } })
+  })
+
+  it("should NOT cancel task when session.get returns a transient error response", async () => {
+    //#given — repeated missing polls but lookup failed with a retryable transport error
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+
+    mockClient.session.get.mockResolvedValue({
+      error: { message: "Network timeout", status: 500 },
+      data: undefined,
+    })
+
+    //#when
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+
+    //#then
+    expect(task.status).toBe("running")
+    expect(task.consecutiveMissedPolls).toBe(0)
+    expect(mockClient.session.get).toHaveBeenCalledWith({ path: { id: "ses-1" } })
+  })
+
+  it("should use session-gone timeout when session is missing from status map (with progress)", async () => {
+    //#given — lastUpdate 2min ago, session completely gone from status
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+
+    mockClient.session.get.mockRejectedValue(new Error("missing"))
+
+    //#when — empty sessionStatuses (session gone), sessionGoneTimeoutMs = 60s
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+
+    //#then — cancelled because session gone timeout (60s) < timeSinceLastUpdate (120s)
     expect(task.status).toBe("cancelled")
-    expect(task.error).toContain("Stale timeout")
+    expect(task.error).toContain("session gone from status registry")
+  })
+
+  it("should await abort before resolving for session-gone interruption", async () => {
+    //#given
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+    const deferred = createDeferredPromise()
+    mockClient.session.get.mockRejectedValue(new Error("missing"))
+    mockClient.session.abort.mockImplementationOnce(() => deferred.promise)
+
+    //#when
+    const interruptPromise = checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+    let settled = false
+    void interruptPromise.then(() => {
+      settled = true
+    })
+
+    await Promise.resolve()
+
+    //#then
+    expect(settled).toBe(false)
+
+    deferred.resolve()
+    await interruptPromise
+
+    expect(settled).toBe(true)
+  })
+
+  it("should use session-gone timeout when session is missing from status map (no progress)", async () => {
+    //#given — task started 2min ago, no progress, session completely gone
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 120_000),
+      progress: undefined,
+      consecutiveMissedPolls: 2,
+    })
+
+    mockClient.session.get.mockRejectedValue(new Error("missing"))
+
+    //#when — session gone, sessionGoneTimeoutMs = 60s
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { messageStalenessTimeoutMs: 600_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+
+    //#then — cancelled because session gone timeout (60s) < runtime (120s)
+    expect(task.status).toBe("cancelled")
+    expect(task.error).toContain("session gone from status registry")
+  })
+
+  it("should NOT use session-gone timeout when session is idle (present in status map)", async () => {
+    //#given — lastUpdate 2min ago, session is idle (present in status but not active)
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+
+    mockClient.session.get.mockRejectedValue(new Error("missing"))
+
+    //#when — session is idle (present in map), staleTimeoutMs = 180s
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: { staleTimeoutMs: 180_000, sessionGoneTimeoutMs: 60_000 },
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: { "ses-1": { type: "idle" } },
+    })
+
+    //#then — still running because normal staleTimeout (180s) > timeSinceLastUpdate (120s)
+    expect(task.status).toBe("running")
+  })
+
+  it("should use default session-gone timeout when not configured", async () => {
+    //#given — lastUpdate 2min ago, session gone, no sessionGoneTimeoutMs config
+    const task = createRunningTask({
+      startedAt: new Date(Date.now() - 300_000),
+      progress: {
+        toolCalls: 1,
+        lastUpdate: new Date(Date.now() - 120_000),
+      },
+      consecutiveMissedPolls: 2,
+    })
+
+    mockClient.session.get.mockRejectedValue(new Error("missing"))
+
+    //#when — no config (default sessionGoneTimeoutMs = 60_000)
+    await checkAndInterruptStaleTasks({
+      tasks: [task],
+      client: mockClient as never,
+      config: undefined,
+      concurrencyManager: mockConcurrencyManager as never,
+      notifyParentSession: mockNotify,
+      sessionStatuses: {},
+    })
+
+    //#then — cancelled because default session gone timeout (60s) < timeSinceLastUpdate (120s)
+    expect(task.status).toBe("cancelled")
+    expect(task.error).toContain("session gone from status registry")
   })
 
   it("should NOT interrupt task when session is busy (OpenCode status), even if lastUpdate exceeds stale timeout", async () => {
@@ -524,6 +784,132 @@ describe("pruneStaleTasksAndNotifications", () => {
 
     //#then
     expect(pruned).toContain("old-task")
+  })
+
+  it("#given running task with recent progress #when startedAt exceeds TTL #then should NOT prune", () => {
+    //#given
+    const tasks = new Map<string, BackgroundTask>()
+    const activeTask: BackgroundTask = {
+      id: "active-task",
+      parentSessionID: "parent",
+      parentMessageID: "msg",
+      description: "active",
+      prompt: "active",
+      agent: "oracle",
+      status: "running",
+      startedAt: new Date(Date.now() - 45 * 60 * 1000),
+      progress: {
+        toolCalls: 10,
+        lastUpdate: new Date(Date.now() - 5 * 60 * 1000),
+      },
+    }
+    tasks.set("active-task", activeTask)
+
+    const pruned: string[] = []
+    const notifications = new Map<string, BackgroundTask[]>()
+
+    //#when
+    pruneStaleTasksAndNotifications({
+      tasks,
+      notifications,
+      onTaskPruned: (taskId) => pruned.push(taskId),
+    })
+
+    //#then
+    expect(pruned).toEqual([])
+  })
+
+  it("#given running task with stale progress #when lastUpdate exceeds TTL #then should prune", () => {
+    //#given
+    const tasks = new Map<string, BackgroundTask>()
+    const staleTask: BackgroundTask = {
+      id: "stale-task",
+      parentSessionID: "parent",
+      parentMessageID: "msg",
+      description: "stale",
+      prompt: "stale",
+      agent: "oracle",
+      status: "running",
+      startedAt: new Date(Date.now() - 60 * 60 * 1000),
+      progress: {
+        toolCalls: 10,
+        lastUpdate: new Date(Date.now() - 35 * 60 * 1000),
+      },
+    }
+    tasks.set("stale-task", staleTask)
+
+    const pruned: string[] = []
+    const notifications = new Map<string, BackgroundTask[]>()
+
+    //#when
+    pruneStaleTasksAndNotifications({
+      tasks,
+      notifications,
+      onTaskPruned: (taskId) => pruned.push(taskId),
+    })
+
+    //#then
+    expect(pruned).toContain("stale-task")
+  })
+
+  it("#given custom taskTtlMs #when task exceeds custom TTL #then should prune", () => {
+    //#given
+    const tasks = new Map<string, BackgroundTask>()
+    const task: BackgroundTask = {
+      id: "custom-ttl-task",
+      parentSessionID: "parent",
+      parentMessageID: "msg",
+      description: "custom",
+      prompt: "custom",
+      agent: "explore",
+      status: "running",
+      startedAt: new Date(Date.now() - 61 * 60 * 1000),
+    }
+    tasks.set("custom-ttl-task", task)
+
+    const pruned: string[] = []
+    const notifications = new Map<string, BackgroundTask[]>()
+
+    //#when
+    pruneStaleTasksAndNotifications({
+      tasks,
+      notifications,
+      taskTtlMs: 60 * 60 * 1000,
+      onTaskPruned: (taskId) => pruned.push(taskId),
+    })
+
+    //#then
+    expect(pruned).toContain("custom-ttl-task")
+  })
+
+  it("#given custom taskTtlMs #when task within custom TTL #then should NOT prune", () => {
+    //#given
+    const tasks = new Map<string, BackgroundTask>()
+    const task: BackgroundTask = {
+      id: "within-ttl-task",
+      parentSessionID: "parent",
+      parentMessageID: "msg",
+      description: "within",
+      prompt: "within",
+      agent: "explore",
+      status: "running",
+      startedAt: new Date(Date.now() - 45 * 60 * 1000),
+    }
+    tasks.set("within-ttl-task", task)
+
+    const pruned: string[] = []
+    const notifications = new Map<string, BackgroundTask[]>()
+
+    //#when
+    pruneStaleTasksAndNotifications({
+      tasks,
+      notifications,
+      taskTtlMs: 60 * 60 * 1000,
+      onTaskPruned: (taskId) => pruned.push(taskId),
+    })
+
+    //#then
+    expect(pruned).toEqual([])
   })
 
   it("should prune terminal tasks when completion time exceeds terminal TTL", () => {

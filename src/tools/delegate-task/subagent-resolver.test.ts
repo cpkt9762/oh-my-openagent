@@ -88,7 +88,7 @@ describe("resolveSubagentExecution", () => {
   test("normalizes matched agent model string before returning categoryModel", async () => {
     //#given
     const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
-      models: { openai: ["grok-3"] },
+      models: { openai: ["grok-3", "gpt-5.3-codex"] },
       connected: ["openai"],
       updatedAt: "2026-03-03T00:00:00.000Z",
     })
@@ -410,6 +410,56 @@ describe("resolveSubagentExecution", () => {
     connectedSpy.mockRestore()
   })
 
+  test("does not use unavailable matchedAgent.model as fallback for custom subagent", async () => {
+    //#given
+    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
+      models: { minimaxi: ["MiniMax-M2.7"] },
+      connected: ["minimaxi"],
+      updatedAt: "2026-03-03T00:00:00.000Z",
+    })
+    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["minimaxi"])
+    const args = createBaseArgs({ subagent_type: "my-custom-agent" })
+    const executorCtx = createExecutorContext(
+      async () => ([
+        { name: "my-custom-agent", mode: "subagent", model: "minimaxi/MiniMax-M2.7-highspeed" },
+      ]),
+    )
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.categoryModel?.modelID).not.toBe("MiniMax-M2.7-highspeed")
+    cacheSpy.mockRestore()
+    connectedSpy.mockRestore()
+  })
+
+  test("uses matchedAgent.model as fallback when model is available", async () => {
+    //#given
+    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
+      models: { minimaxi: ["MiniMax-M2.7-highspeed"] },
+      connected: ["minimaxi"],
+      updatedAt: "2026-03-03T00:00:00.000Z",
+    })
+    const connectedSpy = spyOn(connectedProvidersCache, "readConnectedProvidersCache").mockReturnValue(["minimaxi"])
+    const args = createBaseArgs({ subagent_type: "my-custom-agent" })
+    const executorCtx = createExecutorContext(
+      async () => ([
+        { name: "my-custom-agent", mode: "subagent", model: "minimaxi/MiniMax-M2.7-highspeed" },
+      ]),
+    )
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.categoryModel).toEqual({ providerID: "minimaxi", modelID: "MiniMax-M2.7-highspeed" })
+    cacheSpy.mockRestore()
+    connectedSpy.mockRestore()
+  })
+
   test("prefers the most specific prefix match when fallback entries share a prefix", async () => {
     //#given
     const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
@@ -456,5 +506,80 @@ describe("resolveSubagentExecution", () => {
     })
     cacheSpy.mockRestore()
     connectedSpy.mockRestore()
+  })
+})
+
+describe("resolveSubagentExecution - agent name sanitization", () => {
+  let logSpy: ReturnType<typeof spyOn> | undefined
+
+  beforeEach(() => {
+    logSpy = spyOn(logger, "log").mockImplementation(() => {})
+  })
+
+  afterEach(() => {
+    logSpy?.mockRestore()
+  })
+
+  test("strips backslash-wrapped agent names like \\hephaestus\\", async () => {
+    //#given
+    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
+      models: {},
+      connected: [],
+      updatedAt: "2026-03-03T00:00:00.000Z",
+    })
+    const args = createBaseArgs({ subagent_type: "\\hephaestus\\" })
+    const executorCtx = createExecutorContext(async () => ([
+      { name: "Hephaestus (Deep Agent)", mode: "subagent", model: "openai/gpt-5.3-codex" },
+    ]))
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.agentToUse).toBe("Hephaestus (Deep Agent)")
+    cacheSpy.mockRestore()
+  })
+
+  test("strips double-quoted agent names", async () => {
+    //#given
+    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
+      models: {},
+      connected: [],
+      updatedAt: "2026-03-03T00:00:00.000Z",
+    })
+    const args = createBaseArgs({ subagent_type: '"oracle"' })
+    const executorCtx = createExecutorContext(async () => ([
+      { name: "oracle", mode: "subagent" },
+    ]))
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.agentToUse).toBe("oracle")
+    cacheSpy.mockRestore()
+  })
+
+  test("strips single-quoted agent names", async () => {
+    //#given
+    const cacheSpy = spyOn(connectedProvidersCache, "readProviderModelsCache").mockReturnValue({
+      models: {},
+      connected: [],
+      updatedAt: "2026-03-03T00:00:00.000Z",
+    })
+    const args = createBaseArgs({ subagent_type: "'explore'" })
+    const executorCtx = createExecutorContext(async () => ([
+      { name: "explore", mode: "subagent" },
+    ]))
+
+    //#when
+    const result = await resolveSubagentExecution(args, executorCtx, "sisyphus", "deep")
+
+    //#then
+    expect(result.error).toBeUndefined()
+    expect(result.agentToUse).toBe("explore")
+    cacheSpy.mockRestore()
   })
 })

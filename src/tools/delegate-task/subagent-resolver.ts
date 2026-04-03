@@ -13,6 +13,7 @@ import { log } from "../../shared/logger"
 import { getAvailableModelsForDelegateTask } from "./available-models"
 import type { FallbackEntry } from "../../shared/model-requirements"
 import { resolveModelForDelegateTask } from "./model-selection"
+import { fuzzyMatchModel } from "../../shared/model-availability"
 
 export async function resolveSubagentExecution(
   args: DelegateTaskArgs,
@@ -26,7 +27,9 @@ export async function resolveSubagentExecution(
     return { agentToUse: "", categoryModel: undefined, error: `Agent name cannot be empty.` }
   }
 
-  const agentName = args.subagent_type.trim()
+  // Strip wrapping characters (backslashes, quotes) that LLMs sometimes add around agent names
+  // e.g. \hephaestus\ -> hephaestus, "oracle" -> oracle, 'explore' -> explore
+  const agentName = args.subagent_type.trim().replace(/^[\\\/"']+|[\\\/"']+$/g, "").trim()
 
   if (agentName.toLowerCase() === SISYPHUS_JUNIOR_AGENT.toLowerCase()) {
     return {
@@ -101,13 +104,17 @@ Create the work plan directly - that's your job as the planning agent.`,
     const agentOverride = agentOverrides?.[agentConfigKey as keyof typeof agentOverrides]
       ?? (agentOverrides ? Object.entries(agentOverrides).find(([key]) => key.toLowerCase() === agentConfigKey)?.[1] : undefined)
     const agentRequirement = AGENT_MODEL_REQUIREMENTS[agentConfigKey]
+    const agentCategoryModel = agentOverride?.category
+      ? userCategories?.[agentOverride.category]?.model
+      : undefined
     const normalizedAgentFallbackModels = normalizeFallbackModels(
       agentOverride?.fallback_models
       ?? (agentOverride?.category ? userCategories?.[agentOverride.category]?.fallback_models : undefined)
     )
 
-    if (agentOverride?.model || agentRequirement || matchedAgent.model) {
-      const availableModels = await getAvailableModelsForDelegateTask(client)
+    const availableModels = await getAvailableModelsForDelegateTask(client)
+
+    if (agentOverride?.model || agentCategoryModel || agentRequirement || matchedAgent.model) {
 
       const normalizedMatchedModel = matchedAgent.model
         ? normalizeModelFormat(matchedAgent.model)
@@ -117,7 +124,7 @@ Create the work plan directly - that's your job as the planning agent.`,
         : undefined
 
       const resolution = resolveModelForDelegateTask({
-        userModel: agentOverride?.model,
+        userModel: agentOverride?.model ?? agentCategoryModel,
         userFallbackModels: flattenToFallbackModelStrings(normalizedAgentFallbackModels),
         categoryDefaultModel: matchedAgentModelStr,
         fallbackChain: agentRequirement?.fallbackChain,
@@ -125,11 +132,28 @@ Create the work plan directly - that's your job as the planning agent.`,
         systemDefaultModel: undefined,
       })
 
-      if (resolution && !('skipped' in resolution)) {
+      const resolutionSkipped = resolution && 'skipped' in resolution
+
+      if (resolution && !resolutionSkipped) {
         const normalized = normalizeModelFormat(resolution.model)
         if (normalized) {
           const variantToUse = agentOverride?.variant ?? resolution.variant
           categoryModel = variantToUse ? { ...normalized, variant: variantToUse } : normalized
+        }
+      } else if (resolutionSkipped && (agentOverride?.model ?? agentCategoryModel)) {
+        // Cold cache: resolution was skipped but user explicitly configured a model.
+        // Honor the user override directly — don't fall through to hardcoded fallback chain.
+        const normalized = normalizeModelFormat((agentOverride?.model ?? agentCategoryModel)!)
+        if (normalized) {
+          const agentCategoryVariant = agentOverride?.category
+            ? userCategories?.[agentOverride.category]?.variant
+            : undefined
+          const variantToUse = agentOverride?.variant ?? agentCategoryVariant
+          categoryModel = variantToUse ? { ...normalized, variant: variantToUse } : normalized
+          log("[delegate-task] Cold cache: using explicit user override for subagent", {
+            agent: agentToUse,
+            model: agentOverride?.model ?? agentCategoryModel,
+          })
         }
       }
 
@@ -140,7 +164,9 @@ Create the work plan directly - that's your job as the planning agent.`,
         normalizedAgentFallbackModels,
         defaultProviderID,
       )
-      fallbackChain = configuredFallbackChain ?? agentRequirement?.fallbackChain
+      // Don't assign hardcoded fallback chain when resolution was skipped (cold cache)
+      // — the chain may contain model IDs that don't exist in the provider yet.
+      fallbackChain = configuredFallbackChain ?? (resolutionSkipped ? undefined : agentRequirement?.fallbackChain)
 
       // Only promote fallback-only settings when resolution actually selected a fallback model.
       const resolvedFallbackEntry = (resolution && !('skipped' in resolution)) ? resolution.fallbackEntry : undefined
@@ -170,7 +196,15 @@ Create the work plan directly - that's your job as the planning agent.`,
     if (!categoryModel && matchedAgent.model) {
       const normalizedMatchedModel = normalizeModelFormat(matchedAgent.model)
       if (normalizedMatchedModel) {
-        categoryModel = normalizedMatchedModel
+        const fullModel = `${normalizedMatchedModel.providerID}/${normalizedMatchedModel.modelID}`
+        if (availableModels.size === 0 || fuzzyMatchModel(fullModel, availableModels, [normalizedMatchedModel.providerID])) {
+          categoryModel = normalizedMatchedModel
+        } else {
+          log("[delegate-task] Skipping unavailable agent default model", {
+            agent: agentToUse,
+            model: fullModel,
+          })
+        }
       }
     }
   } catch (error) {

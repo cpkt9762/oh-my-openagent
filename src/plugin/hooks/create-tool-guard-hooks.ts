@@ -11,6 +11,7 @@ import {
   createRulesInjectorHook,
   createTasksTodowriteDisablerHook,
   createWriteExistingFileGuardHook,
+  createBashFileReadGuardHook,
   createHashlineReadEnhancerHook,
   createReadImageResizerHook,
   createJsonErrorRecoveryHook,
@@ -34,6 +35,7 @@ export type ToolGuardHooks = {
   rulesInjector: ReturnType<typeof createRulesInjectorHook> | null
   tasksTodowriteDisabler: ReturnType<typeof createTasksTodowriteDisablerHook> | null
   writeExistingFileGuard: ReturnType<typeof createWriteExistingFileGuardHook> | null
+  bashFileReadGuard: ReturnType<typeof createBashFileReadGuardHook> | null
   hashlineReadEnhancer: ReturnType<typeof createHashlineReadEnhancerHook> | null
   jsonErrorRecovery: ReturnType<typeof createJsonErrorRecoveryHook> | null
   readImageResizer: ReturnType<typeof createReadImageResizerHook> | null
@@ -89,9 +91,13 @@ export function createToolGuardHooks(args: {
     ? safeHook("empty-task-response-detector", () => createEmptyTaskResponseDetectorHook(ctx))
     : null
 
+  const cc = pluginConfig.claude_code
+  const skipClaudeUserRules = cc?.hooks === false
   const rulesInjector = isHookEnabled("rules-injector")
     ? safeHook("rules-injector", () =>
-        createRulesInjectorHook(ctx, modelCacheState))
+        createRulesInjectorHook(ctx, modelCacheState, {
+          skipClaudeUserRules,
+        }))
     : null
 
   const tasksTodowriteDisabler = isHookEnabled("tasks-todowrite-disabler")
@@ -101,6 +107,10 @@ export function createToolGuardHooks(args: {
 
   const writeExistingFileGuard = isHookEnabled("write-existing-file-guard")
     ? safeHook("write-existing-file-guard", () => createWriteExistingFileGuardHook(ctx))
+    : null
+
+  const bashFileReadGuard = isHookEnabled("bash-file-read-guard")
+    ? safeHook("bash-file-read-guard", () => createBashFileReadGuardHook())
     : null
 
   const hashlineReadEnhancer = isHookEnabled("hashline-read-enhancer")
@@ -132,6 +142,7 @@ export function createToolGuardHooks(args: {
     rulesInjector,
     tasksTodowriteDisabler,
     writeExistingFileGuard,
+    bashFileReadGuard,
     hashlineReadEnhancer,
     jsonErrorRecovery,
     readImageResizer,

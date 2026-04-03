@@ -91,6 +91,16 @@ export function isGpt5_3CodexModel(model: string): boolean {
 
 const GEMINI_PROVIDERS = ["google/", "google-vertex/"];
 
+export function isMiniMaxModel(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return modelName.includes("minimax");
+}
+
+export function isGlmModel(model: string): boolean {
+  const modelName = extractModelName(model).toLowerCase();
+  return modelName.includes("glm");
+}
+
 export function isGeminiModel(model: string): boolean {
   if (GEMINI_PROVIDERS.some((prefix) => model.startsWith(prefix))) return true;
 

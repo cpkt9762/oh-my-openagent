@@ -1,5 +1,7 @@
 import type { PluginInput } from "@opencode-ai/plugin"
 import type { BackgroundManager } from "../../features/background-agent"
+import { isAgentRegistered } from "../../features/claude-code-session-state"
+import { normalizeAgentForPrompt } from "../../shared/agent-display-names"
 import { log } from "../../shared/logger"
 import { createInternalAgentTextPart, resolveInheritedPromptTools } from "../../shared"
 import { HOOK_NAME } from "./hook-name"
@@ -52,6 +54,15 @@ export async function injectBoulderContinuation(input: {
     `\n\n[Status: ${total - remaining}/${total} completed, ${remaining} remaining]` +
     preferredSessionContext +
     worktreeContext
+  const continuationAgent = agent ?? (isAgentRegistered("atlas") ? "atlas" : undefined)
+
+  if (!continuationAgent || !isAgentRegistered(continuationAgent)) {
+    log(`[${HOOK_NAME}] Skipped injection: continuation agent unavailable`, {
+      sessionID,
+      agent: continuationAgent ?? agent ?? "unknown",
+    })
+    return
+  }
 
   try {
     log(`[${HOOK_NAME}] Injecting boulder continuation`, { sessionID, planName, remaining })
@@ -62,7 +73,7 @@ export async function injectBoulderContinuation(input: {
     await ctx.client.session.promptAsync({
       path: { id: sessionID },
       body: {
-        agent: agent ?? "atlas",
+        agent: normalizeAgentForPrompt(continuationAgent) ?? continuationAgent,
         ...(promptContext.model !== undefined ? { model: promptContext.model } : {}),
         ...(promptContext.variant ? { variant: promptContext.variant } : {}),
         ...(inheritedTools ? { tools: inheritedTools } : {}),
