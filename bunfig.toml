@@ -4,3 +4,6 @@ pathIgnorePatterns = ["packages/web/**", "packages/lsp-tools-mcp/**", "packages/
 
 [loader]
 ".md" = "text"
+
+[install]
+linker = "hoisted"
