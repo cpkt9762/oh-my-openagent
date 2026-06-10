@@ -3,10 +3,11 @@ import {
   getMessageSessionID,
   repairMissingToolResults,
   repairSubAgentMissingToolResults,
+  type ShouldLogRepair,
 } from "./tool-result-repair"
 import type { MessageWithParts } from "./types"
 
-export function validateToolPairsForMessages(messages: MessageWithParts[]): void {
+export function validateToolPairsForMessages(messages: MessageWithParts[], shouldLog: ShouldLogRepair): void {
   for (let i = 0; i < messages.length; i++) {
     const messageInfo = messages[i].info
 
@@ -20,6 +21,6 @@ export function validateToolPairsForMessages(messages: MessageWithParts[]): void
       continue
     }
 
-    repairMissingToolResults(messages, i)
+    repairMissingToolResults(messages, i, shouldLog)
   }
 }

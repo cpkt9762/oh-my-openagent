@@ -5,6 +5,44 @@ import type { MessageWithParts, ToolResultPart, TransformMessageInfo, TransformP
 const TOOL_RESULT_PLACEHOLDER = "Tool output unavailable (context compacted)"
 const TOOL_RESULT_RECOVERY_CONTINUATION = "Recovered missing tool results. Continue from the repaired tool output."
 
+const REPAIR_LOG_CACHE_MAX_SIZE = 1000
+
+export type ShouldLogRepair = (
+  assistantMessageID: string | undefined,
+  repairedToolUseIDs: readonly string[],
+) => boolean
+
+export function createShouldLogRepair(): ShouldLogRepair {
+  const reportedRepairs = new Map<string, Set<string>>()
+
+  return (assistantMessageID, repairedToolUseIDs) => {
+    if (!assistantMessageID || repairedToolUseIDs.length === 0) {
+      return true
+    }
+
+    let reported = reportedRepairs.get(assistantMessageID)
+    if (!reported) {
+      if (reportedRepairs.size >= REPAIR_LOG_CACHE_MAX_SIZE) {
+        const oldestKey = reportedRepairs.keys().next().value
+        if (oldestKey !== undefined) {
+          reportedRepairs.delete(oldestKey)
+        }
+      }
+      reported = new Set<string>()
+      reportedRepairs.set(assistantMessageID, reported)
+    }
+
+    let hasNewID = false
+    for (const toolUseID of repairedToolUseIDs) {
+      if (!reported.has(toolUseID)) {
+        reported.add(toolUseID)
+        hasNewID = true
+      }
+    }
+    return hasNewID
+  }
+}
+
 function createToolResultPart(toolUseID: string): ToolResultPart {
   return {
     type: "tool_result",
@@ -153,7 +191,11 @@ export function repairSubAgentMissingToolResults(
   })
 }
 
-export function repairMissingToolResults(messages: MessageWithParts[], assistantIndex: number): void {
+export function repairMissingToolResults(
+  messages: MessageWithParts[],
+  assistantIndex: number,
+  shouldLog: ShouldLogRepair,
+): void {
   const analysis = analyzeMissingToolResults(messages, assistantIndex)
 
   if (!analysis.needsRepair) {
@@ -164,11 +206,13 @@ export function repairMissingToolResults(messages: MessageWithParts[], assistant
 
   if (analysis.syntheticUserMessageInserted) {
     messages.splice(assistantIndex + 1, 0, createSyntheticUserMessage(assistantMessage, analysis.missingToolUseIDs))
-    log("[tool-pair-validator] Repaired missing tool_result blocks", {
-      assistantMessageID: analysis.assistantMessageID,
-      syntheticUserMessageInserted: true,
-      repairedToolUseIDs: analysis.missingToolUseIDs,
-    })
+    if (shouldLog(analysis.assistantMessageID, analysis.missingToolUseIDs)) {
+      log("[tool-pair-validator] Repaired missing tool_result blocks", {
+        assistantMessageID: analysis.assistantMessageID,
+        syntheticUserMessageInserted: true,
+        repairedToolUseIDs: analysis.missingToolUseIDs,
+      })
+    }
     return
   }
 
@@ -178,9 +222,11 @@ export function repairMissingToolResults(messages: MessageWithParts[], assistant
   }
 
   insertMissingToolResults(nextMessage, analysis.missingToolUseIDs)
-  log("[tool-pair-validator] Repaired missing tool_result blocks", {
-    assistantMessageID: analysis.assistantMessageID,
-    syntheticUserMessageInserted: false,
-    repairedToolUseIDs: analysis.missingToolUseIDs,
-  })
+  if (shouldLog(analysis.assistantMessageID, analysis.missingToolUseIDs)) {
+    log("[tool-pair-validator] Repaired missing tool_result blocks", {
+      assistantMessageID: analysis.assistantMessageID,
+      syntheticUserMessageInserted: false,
+      repairedToolUseIDs: analysis.missingToolUseIDs,
+    })
+  }
 }
